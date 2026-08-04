@@ -11,9 +11,15 @@ ManualGaitAnalyzer :
 
 * 6/24/26 : Added the feature to remove the last points (for editing ability for misclicks). Within a folder, save all the different MUID (videos) within the same .csv file, different rows indicating different MUID.
 
-* 7/7/26 : Added Base of Support calculations.
+* 7/7/26 : Added Base of Support calculations. (This include only the y-coordinate calculation due to accounting that with tunnel design, the mice can only move in one direction.)
 
 * 7/20/26 : Added a pause after inputting points and require the user the press "ENTER" before moving onto the next step.
+
+* 8/3/26 : Added dynamic point-count per hind paw, replacing the previous hardcoded 3-point limit per side. Users can now determine how many paw coordinates are collected for analysis. Increasing the number of points allows more strides to contribute to the average gait parameters. Default / Minimum value is 3 points per side.
+
+* 8/4/26 : Added TkMessageBox instruction prompts when the maximum required point count for a hind paw is reached. If points are removed and the maximum count is reached again, the instruction prompt will reappear.
+
+* 
 '''
 
 import cv2
@@ -23,6 +29,7 @@ import math
 import pandas as pd
 import tkinter as tk
 from tkinter import filedialog
+from tkinter import simpledialog
 import tkinter.messagebox as tkMessageBox
 
 # Global Variables for Tracking State
@@ -30,24 +37,29 @@ clicked_points = []  # Stores the coordinates (spatial) and the specific frame (
 current_stage = "CALIBRATION"  # Stages: CALIBRATION, HIND_RIGHT, HIND_LEFT, DONE
 frame_idx = 0  # Shared the current frame with mouse_callback functions.
 
+# Dynamic thresholds set by user at runtime (defaulting to 3 points per side)
+pts_per_side = 3
+max_right_idx = 2 + 3       # Calibration takes indices 0, 1 -> Right starts at index 2
+max_left_idx = 2 + 3 + 3   # Left starts immediately after Right
+
 # This functions specify that in the event of a mice click, it saves the coordinate and the frame within clicked_points.
 def mouse_callback(event, x, y, flags, param):
-    global clicked_points, current_stage, frame_idx
+    global clicked_points, current_stage, frame_idx, pts_per_side, max_right_idx, max_left_idx
     if event == cv2.EVENT_LBUTTONDOWN:
         if current_stage == "CALIBRATION" and len(clicked_points) < 2:
             clicked_points.append((x, y, frame_idx))
             if len(clicked_points) == 2:
                 print("Calibration points captured. Press ENTER to confirm real distance.")
-        elif current_stage == "HIND_RIGHT" and len(clicked_points) < 5:
+        elif current_stage == "HIND_RIGHT" and len(clicked_points) < max_right_idx:
             clicked_points.append((x, y, frame_idx))
             print(f"Captured Hind Right Print #{len(clicked_points) - 2} at frame {frame_idx}")
-        elif current_stage == "HIND_LEFT" and len(clicked_points) < 8:
+        elif current_stage == "HIND_LEFT" and len(clicked_points) < max_left_idx:
             clicked_points.append((x, y, frame_idx))
-            print(f"Captured Hind Left Print #{len(clicked_points) - 5} at frame {frame_idx}")
+            print(f"Captured Hind Left Print #{len(clicked_points) - max_right_idx} at frame {frame_idx}")
 
 
 def main():
-    global clicked_points, current_stage, frame_idx
+    global clicked_points, current_stage, frame_idx, pts_per_side, max_right_idx, max_left_idx
 
     # 1. Select Video File
     root = tk.Tk()
@@ -57,6 +69,20 @@ def main():
     if not video_path:
         print("No file selected. Exiting.")
         return
+
+    # Prompt user for the number of points per hind leg side (minimum 2 points required to calculate at least 1 stride)
+    pts_input = simpledialog.askinteger("Configuration", "Enter number of points to click per hind paw:", initialvalue=3, minvalue=3)
+    if pts_input is None:
+        print("No point count entered. Exiting.")
+        return
+    
+    pts_per_side = pts_input
+    # Index boundaries dynamically defined based on user configuration:
+    # Index 0, 1 -> Calibration
+    # Index 2 to (2 + pts_per_side - 1) -> Hind Right
+    # Index (2 + pts_per_side) to (2 + 2*pts_per_side - 1) -> Hind Left
+    max_right_idx = 2 + pts_per_side
+    max_left_idx = 2 + (2 * pts_per_side)
 
     # Generate the output file name based on the directory/folder that the video is in
     video_dir = os.path.dirname(video_path)
@@ -94,6 +120,9 @@ def main():
     tkMessageBox.showinfo("Step 1: Calibration",
                           "Click TWO points to mark a known reference distance.\nPress ENTER to confirm.\nPress 'C' to clear last point.")
 
+    isRightFinished = False
+    isLeftFinished = False
+
     while True:
         img_copy = first_frame_resized.copy()
 
@@ -124,7 +153,6 @@ def main():
     pixel_distance = math.sqrt((cx2 - cx1) ** 2 + (cy2 - cy1) ** 2)
 
     # Prompt user for real world distance of the drawn scale
-    from tkinter import simpledialog
     real_distance_cm = simpledialog.askfloat("Calibration Scale", "Enter real-world distance in cm:", minvalue=0.001)
 
     if real_distance_cm is None or real_distance_cm <= 0:
@@ -141,7 +169,7 @@ def main():
     # 4. Interactive Gait Video Player Settings
     current_stage = "HIND_RIGHT"
     tkMessageBox.showinfo("Step 2: Track Path",
-                          "Use trackbar to navigate time.\nPress SPACEBAR to Pause/Play.\nClick 3 consecutive Hind Right steps.\nPress 'C' to Undo last point.")
+                          f"Use trackbar to navigate time.\nPress SPACEBAR to Pause/Play.\nClick {pts_per_side} consecutive Hind Right steps.\nPress 'C' to Undo last point.\nPress 'ENTER' when finished")
 
     frame_idx = 0
     is_playing = True
@@ -171,38 +199,65 @@ def main():
 
         frame_resized = cv2.resize(frame, (display_w, display_h))
 
-        cv2.putText(frame_resized, f"Stage: Click 3 {current_stage.replace('_', ' ')} Points", (15, 30),
+        cv2.putText(frame_resized, f"Stage: Click {pts_per_side} {current_stage.replace('_', ' ')} Points", (15, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         cv2.putText(frame_resized, f"Frame: {frame_idx} / {total_frames - 1} | [Space]: Pause | [C]: Undo", (15, 55),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
-        # Drawing of the paws. 3rd, 4th, 5th clicked point denote the location of the right paws. Draw a line connecting them.
+        # Dynamic Drawing for Hind Right Paws. Right paw clicks reside in indices [2 : max_right_idx]
         if len(clicked_points) >= 3:
-            for j in range(2, min(len(clicked_points), 5)):
+            right_end_idx = min(len(clicked_points), max_right_idx)
+            for j in range(2, right_end_idx):
                 pt = clicked_points[j]
                 cv2.circle(frame_resized, (pt[0], pt[1]), 6, (255, 191, 0), -1)
                 cv2.putText(frame_resized, f"R{j - 1}", (pt[0] + 8, pt[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                             (255, 191, 0), 2)
-            if len(clicked_points) >= 4:
-                cv2.line(frame_resized, (clicked_points[2][0], clicked_points[2][1]),
-                         (clicked_points[3][0], clicked_points[3][1]), (255, 191, 0), 2)
-            if len(clicked_points) >= 5:
-                cv2.line(frame_resized, (clicked_points[3][0], clicked_points[3][1]),
-                         (clicked_points[4][0], clicked_points[4][1]), (255, 191, 0), 2)
+                # Connect consecutive points with a line
+                if j > 2:
+                    cv2.line(frame_resized, (clicked_points[j - 1][0], clicked_points[j - 1][1]),
+                             (clicked_points[j][0], clicked_points[j][1]), (255, 191, 0), 2)
 
-        # Drawing of the paws. 6th, 7th, 8th clicked point denote the location of the left paws. Draw a line connecting them.
-        if len(clicked_points) >= 6:
-            for k in range(5, min(len(clicked_points), 8)):
+            
+            if len(clicked_points) >= max_right_idx and not isRightFinished:
+                isRightFinished = True
+                tkMessageBox.showinfo(
+                    "Finished Collecting Right Hind Leg",
+                    f"Finished collecting {pts_per_side} Right Coordinates.\n\n"
+                    "Click OK, then click back into the EasyGait window.\n"
+                    "Press [ENTER] to begin marking the Left Hind Leg.\n"
+                    "Press [C] to undo any points."
+                )
+            if len(clicked_points) < max_right_idx:
+                isRightFinished = False
+
+        # Dynamic Drawing for Hind Left Paws. Left paw clicks reside in indices [max_right_idx : max_left_idx]
+        if len(clicked_points) >= max_right_idx + 1:
+            cv2.putText(frame_resized, f"Frame: {frame_idx} / {total_frames - 1} | [Space]: Pause | [C]: Undo", (15, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+
+            left_end_idx = min(len(clicked_points), max_left_idx)
+            for k in range(max_right_idx, left_end_idx):
                 pt = clicked_points[k]
                 cv2.circle(frame_resized, (pt[0], pt[1]), 6, (0, 69, 255), -1)
-                cv2.putText(frame_resized, f"L{k - 4}", (pt[0] + 8, pt[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 69, 255),
+                cv2.putText(frame_resized, f"L{k - max_right_idx + 1}", (pt[0] + 8, pt[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 69, 255),
                             2)
-            if len(clicked_points) >= 7:
-                cv2.line(frame_resized, (clicked_points[5][0], clicked_points[5][1]),
-                         (clicked_points[6][0], clicked_points[6][1]), (0, 69, 255), 2)
-            if len(clicked_points) >= 8:
-                cv2.line(frame_resized, (clicked_points[6][0], clicked_points[6][1]),
-                         (clicked_points[7][0], clicked_points[7][1]), (0, 69, 255), 2)
+                # Connect consecutive points with a line
+                if k > max_right_idx:
+                    cv2.line(frame_resized, (clicked_points[k - 1][0], clicked_points[k - 1][1]),
+                             (clicked_points[k][0], clicked_points[k][1]), (0, 69, 255), 2)
+
+            if len(clicked_points) >= max_left_idx and not isLeftFinished:
+                isLeftFinished = True
+                tkMessageBox.showinfo(
+                    "Finished Collecting Left Hind Leg",
+                    f"Finished collecting {pts_per_side} Left Coordinates.\n\n"
+                    "Click OK, then click back into the EasyGait window.\n"
+                    "Press [ENTER] to complete gait analysis.\n"
+                    "Press [C] to undo any points."
+                )
+
+            if len(clicked_points) < max_left_idx:
+                isLeftFinished = False
 
         cv2.imshow(window_title, frame_resized)
 
@@ -211,22 +266,22 @@ def main():
         if key == 32:  # SPACEBAR
             is_playing = not is_playing
         elif key == 13:  # ENTER
-            if current_stage == "HIND_RIGHT" and len(clicked_points) == 5:
+            if current_stage == "HIND_RIGHT" and len(clicked_points) == max_right_idx:
                 current_stage = "HIND_LEFT"
                 tkMessageBox.showinfo("Step 3: Track Hind Left",
-                                      "Hind Right registered manually.\nNow click 3 consecutive Hind Left steps.")
-            elif current_stage == "HIND_LEFT" and len(clicked_points) == 8:
+                                      f"Hind Right registered.\nNow click {pts_per_side} consecutive Hind Left steps.")
+            elif current_stage == "HIND_LEFT" and len(clicked_points) == max_left_idx:
                 current_stage = "DONE"
                 tkMessageBox.showinfo("Step 4: Confirm Data", 
-                                      "Hind Left registered.\nPress ENTER one more time to calculate metrics and save.")
+                                      "Hind Left registered. EasyGait Completes.")
             elif current_stage == "DONE":
                 break
         elif key == ord('c') or key == ord('C'):  # Undo functionality
             if len(clicked_points) > 2:  # Do not delete calibration points here
                 popped = clicked_points.pop()
                 print(f"Removed last tracked point. Total points: {len(clicked_points)}")
-                # Reset tracking stage if rolled back
-                if len(clicked_points) < 5:
+                # Reset tracking stage if rolled back below right paw quota
+                if len(clicked_points) < max_right_idx:
                     current_stage = "HIND_RIGHT"
         elif key == 27:  # ESC. End the program does not output anything.
             cv2.destroyAllWindows()
@@ -242,63 +297,62 @@ def main():
     cap.release()
 
     # 6. Complete Mathematical & Structural Row Output System
-    if len(clicked_points) == 8:
-        p3, p4, p5 = clicked_points[2], clicked_points[3], clicked_points[4]
-        p6, p7, p8 = clicked_points[5], clicked_points[6], clicked_points[7]
+    if len(clicked_points) == max_left_idx:
+        # Extract Right and Left paw tracking sequences dynamically
+        right_pts = clicked_points[2 : max_right_idx]
+        left_pts = clicked_points[max_right_idx : max_left_idx]
 
-        # Base of Support (BOS) Calculations (Simplified Y-Axis Only)
-        px_bos1 = abs(p6[1] - p3[1])  
-        px_bos2 = abs(p7[1] - p4[1])  
-        px_bos3 = abs(p8[1] - p5[1])  
+        # Base of Support (BOS) Calculations (Simplified Y-Axis Only across paired points)
+        cm_bos_list = []
+        for idx in range(pts_per_side):
+            px_bos = abs(left_pts[idx][1] - right_pts[idx][1])
+            cm_bos_list.append(px_bos * cm_per_pixel)
+        cm_bos_avg = sum(cm_bos_list) / len(cm_bos_list)
 
-        # Spatial Pixel Calculations. (x2-x1, y2-y1)
-        px_r1 = math.hypot(p4[0] - p3[0], p4[1] - p3[1])
-        px_r2 = math.hypot(p5[0] - p4[0], p5[1] - p4[1])
-        px_l1 = math.hypot(p7[0] - p6[0], p7[1] - p6[1])
-        px_l2 = math.hypot(p8[0] - p7[0], p8[1] - p7[1])
+        # Dynamic calculation of Right Stride Lengths, Durations, and Velocities
+        cm_r_list = []
+        t_r_list = []
+        sp_r_list = []
+        for i in range(len(right_pts) - 1):
+            p_start, p_end = right_pts[i], right_pts[i + 1]
+            px_dist = math.hypot(p_end[0] - p_start[0], p_end[1] - p_start[1])
+            cm_dist = px_dist * cm_per_pixel
+            cm_r_list.append(cm_dist)
 
-        # Temporal Frame Deltas (Frame2-Frame1)
-        f_r1 = abs(p4[2] - p3[2])
-        f_r2 = abs(p5[2] - p4[2])
-        f_l1 = abs(p7[2] - p6[2])
-        f_l2 = abs(p8[2] - p7[2])
+            t_duration = abs(p_end[2] - p_start[2]) / fps
+            t_r_list.append(t_duration)
 
-        # Convert temporal computer metric (Frame) to real world metric (Seconds).
-        t_r1 = f_r1 / fps
-        t_r2 = f_r2 / fps
-        t_l1 = f_l1 / fps
-        t_l2 = f_l2 / fps
+            speed = cm_dist / t_duration if t_duration > 0 else 0
+            sp_r_list.append(speed)
 
-        # Convert Spacial computer metric (Pixel Distance) to real world metric (Cm).
-        # Base of Support
-        cm_bos1 = px_bos1 * cm_per_pixel
-        cm_bos2 = px_bos2 * cm_per_pixel
-        cm_bos3 = px_bos3 * cm_per_pixel
-        # Stride Length
-        cm_r1 = px_r1 * cm_per_pixel
-        cm_r2 = px_r2 * cm_per_pixel
-        cm_l1 = px_l1 * cm_per_pixel
-        cm_l2 = px_l2 * cm_per_pixel
-        
+        # Dynamic calculation of Left Stride Lengths, Durations, and Velocities
+        cm_l_list = []
+        t_l_list = []
+        sp_l_list = []
+        for i in range(len(left_pts) - 1):
+            p_start, p_end = left_pts[i], left_pts[i + 1]
+            px_dist = math.hypot(p_end[0] - p_start[0], p_end[1] - p_start[1])
+            cm_dist = px_dist * cm_per_pixel
+            cm_l_list.append(cm_dist)
 
-        # Velocity tracking computations
-        sp_r1 = cm_r1 / t_r1 if t_r1 > 0 else 0
-        sp_r2 = cm_r2 / t_r2 if t_r2 > 0 else 0
-        sp_l1 = cm_l1 / t_l1 if t_l1 > 0 else 0
-        sp_l2 = cm_l2 / t_l2 if t_l2 > 0 else 0
+            t_duration = abs(p_end[2] - p_start[2]) / fps
+            t_l_list.append(t_duration)
 
-        # Calculate Spatial Mean for Base of Support
-        cm_bos_avg = (cm_bos1 + cm_bos2 + cm_bos3) / 3.0
+            speed = cm_dist / t_duration if t_duration > 0 else 0
+            sp_l_list.append(speed)
 
-        # Calculate Spatial Mean for right, left, and overall average stride length
-        cm_r_avg = (cm_r1 + cm_r2) / 2.0
-        cm_l_avg = (cm_l1 + cm_l2) / 2.0
-        cm_overall_avg = (cm_r1 + cm_r2 + cm_l1 + cm_l2) / 4.0
+        # Calculate Spatial Means for right, left, and overall average stride length
+        cm_r_avg = sum(cm_r_list) / len(cm_r_list) if cm_r_list else 0
+        cm_l_avg = sum(cm_l_list) / len(cm_l_list) if cm_l_list else 0
+        all_cm_strides = cm_r_list + cm_l_list
+        cm_overall_avg = sum(all_cm_strides) / len(all_cm_strides) if all_cm_strides else 0
 
+        # Calculate Temporal Means for stride duration and speed
+        all_t_durations = t_r_list + t_l_list
+        t_overall_avg = sum(all_t_durations) / len(all_t_durations) if all_t_durations else 0
 
-        # Calculate the temporal mean for stride duration and speed.
-        t_overall_avg = (t_r1 + t_r2 + t_l1 + t_l2) / 4.0
-        sp_overall_avg = (sp_r1 + sp_r2 + sp_l1 + sp_l2) / 4.0
+        all_speeds = sp_r_list + sp_l_list
+        sp_overall_avg = sum(all_speeds) / len(all_speeds) if all_speeds else 0
 
         # Formulate metrics row array using video filename as MUID
         new_row = {
